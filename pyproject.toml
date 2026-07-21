@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skylinedock"
-version = "0.2.0.dev3"
+version = "0.2.0.dev4"
 description = "Safe drag-and-drop mod installer for Cities: Skylines II"
 readme = "README.md"
 requires-python = ">=3.11"

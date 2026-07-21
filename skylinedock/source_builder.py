@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,7 +18,21 @@ from .steam import detect_cs2_steam_installation, validate_cs2_game_path
 
 
 class SourceBuildError(RuntimeError):
-    pass
+    def __init__(self, message: str, diagnostic_log: str | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic_log = diagnostic_log
+
+
+@dataclass(frozen=True, slots=True)
+class DotNetRuntimeRequirement:
+    framework: str
+    version: str
+    source: Path
+
+    @property
+    def family(self) -> str:
+        parts = self.version.split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else self.version
 
 
 @dataclass(slots=True)
@@ -40,6 +55,7 @@ class SourceBuildPrerequisites:
     tool_path: Path | None
     dotnet_executable: str | None
     npm_executable: str | None
+    missing_dotnet_runtimes: list[DotNetRuntimeRequirement] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
 
     @property
@@ -105,9 +121,24 @@ def check_source_build_prerequisites(
         )
 
     dotnet = shutil.which("dotnet")
+    missing_dotnet_runtimes: list[DotNetRuntimeRequirement] = []
     if dotnet is None:
         version = inspection.dotnet_sdk_version or "the required .NET SDK"
         issues.append(f"dotnet was not found; install {version} or a compatible newer SDK.")
+    elif tool_path is not None:
+        requirements = _find_toolchain_runtime_requirements(tool_path)
+        installed_runtimes = _list_dotnet_runtimes(dotnet)
+        missing_dotnet_runtimes = [
+            requirement
+            for requirement in requirements
+            if not _runtime_requirement_is_satisfied(requirement, installed_runtimes)
+        ]
+        for requirement in missing_dotnet_runtimes:
+            issues.append(
+                "The CS2 ModPostProcessor requires "
+                f"{requirement.framework} {requirement.family}; install the .NET "
+                f"{requirement.family} x64 Runtime."
+            )
 
     npm = shutil.which("npm")
     if inspection.ui_directories and npm is None:
@@ -119,6 +150,7 @@ def check_source_build_prerequisites(
         tool_path=tool_path,
         dotnet_executable=dotnet,
         npm_executable=npm,
+        missing_dotnet_runtimes=missing_dotnet_runtimes,
         issues=issues,
     )
 
@@ -143,6 +175,68 @@ def _find_modding_toolchain(game_path: Path | None) -> Path | None:
         if (candidate / "Mod.props").is_file() and (candidate / "Mod.targets").is_file():
             return candidate.resolve()
     return None
+
+
+def _find_toolchain_runtime_requirements(tool_path: Path) -> list[DotNetRuntimeRequirement]:
+    """Read framework requirements for build-time executables in the official toolchain."""
+
+    requirements: list[DotNetRuntimeRequirement] = []
+    configs = sorted(tool_path.rglob("ModPostProcessor.runtimeconfig.json"))
+    for config in configs:
+        try:
+            runtime_options = json.loads(config.read_text(encoding="utf-8-sig"))["runtimeOptions"]
+        except (OSError, KeyError, TypeError, ValueError, UnicodeError):
+            continue
+
+        frameworks: list[dict[str, object]] = []
+        framework = runtime_options.get("framework")
+        if isinstance(framework, dict):
+            frameworks.append(framework)
+        configured_frameworks = runtime_options.get("frameworks")
+        if isinstance(configured_frameworks, list):
+            frameworks.extend(item for item in configured_frameworks if isinstance(item, dict))
+
+        for item in frameworks:
+            name = item.get("name")
+            version = item.get("version")
+            if isinstance(name, str) and isinstance(version, str):
+                requirement = DotNetRuntimeRequirement(name, version, config)
+                if requirement not in requirements:
+                    requirements.append(requirement)
+    return requirements
+
+
+def _list_dotnet_runtimes(dotnet: str) -> set[tuple[str, str]]:
+    try:
+        completed = subprocess.run(
+            [dotnet, "--list-runtimes"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    runtimes: set[tuple[str, str]] = set()
+    for line in completed.stdout.splitlines():
+        match = re.match(r"^(\S+)\s+(\d+(?:\.\d+){1,3})\s+\[", line.strip())
+        if match:
+            runtimes.add((match.group(1), match.group(2)))
+    return runtimes
+
+
+def _runtime_requirement_is_satisfied(
+    requirement: DotNetRuntimeRequirement,
+    installed: set[tuple[str, str]],
+) -> bool:
+    return any(
+        framework == requirement.framework and version.startswith(f"{requirement.family}.")
+        for framework, version in installed
+    )
 
 
 def build_trusted_source(
@@ -176,9 +270,14 @@ def build_trusted_source(
     source_dir.mkdir(parents=True, exist_ok=True)
     user_data_dir.mkdir(parents=True, exist_ok=True)
     _copy_source(report, source_dir)
+    msbuild_overlay = _write_msbuild_overlay(root)
 
     env = os.environ.copy()
     env["CSII_USERDATAPATH"] = str(user_data_dir)
+    # Mod.props reads CSII_LOCALMODSPATH independently from CSII_USERDATAPATH.
+    # Redirect both so a trusted-source build cannot deploy into the player's
+    # live Mods directory before SkylineDock has scanned and approved it.
+    env["CSII_LOCALMODSPATH"] = str(user_data_dir / "Mods")
     if prerequisites.tool_path:
         env["CSII_TOOLPATH"] = str(prerequisites.tool_path)
 
@@ -211,6 +310,9 @@ def build_trusted_source(
         "--configuration",
         "Release",
         "--nologo",
+        f"--property:UserDataPath={user_data_dir}",
+        f"--property:LocalModsPath={user_data_dir / 'Mods'}",
+        f"--property:CustomAfterMicrosoftCommonTargets={msbuild_overlay}",
     ]
     _execute(command_runner, command, project_root, env, logs)
 
@@ -225,7 +327,8 @@ def build_trusted_source(
 
     if not candidates:
         raise SourceBuildError(
-            "The build completed but did not produce a valid mod in the redirected Mods folder."
+            "The build completed but did not produce a valid mod in the redirected Mods folder.",
+            diagnostic_log="\n\n".join(logs),
         )
 
     expected = inspection.mod_name.casefold()
@@ -235,9 +338,71 @@ def build_trusted_source(
     )
     if compiled is None:
         names = ", ".join(item.display_name for item in candidates)
-        raise SourceBuildError(f"The build produced multiple ambiguous mods: {names}")
+        raise SourceBuildError(
+            f"The build produced multiple ambiguous mods: {names}",
+            diagnostic_log="\n\n".join(logs),
+        )
 
     return SourceBuildResult(compiled.source_path, compiled, logs)
+
+
+def _write_msbuild_overlay(root: Path) -> Path:
+    """Create an out-of-tree MSBuild hook for official CS2 runtime references.
+
+    The desktop .NET Framework reference pack and Unity's mscorlib share the
+    same assembly identity. ResolveAssemblyReference may choose the desktop
+    copy even when a mod points at the game DLL. The game's System.Memory is a
+    facade that expects Span<T> and Index in Unity's mscorlib, so compiling
+    against the desktop copy produces CS0518/CS0656 failures.
+    """
+
+    overlay = root / "skylinedock.cs2.targets"
+    overlay.write_text(
+        textwrap.dedent(
+            """\
+            <Project>
+              <Target Name="SkylineDockUseGameRuntimeReferences"
+                      BeforeTargets="CoreCompile"
+                      Condition="Exists('$(ManagedPath)\\mscorlib.dll')">
+                <ItemGroup>
+                  <ReferencePath Remove="@(ReferencePath)"
+                                 Condition="'%(ReferencePath.Filename)' == 'mscorlib'" />
+                  <ReferencePath Include="$(ManagedPath)\\mscorlib.dll">
+                    <Private>false</Private>
+                  </ReferencePath>
+
+                  <ReferencePathWithRefAssemblies Remove="@(ReferencePathWithRefAssemblies)"
+                                                  Condition="'%(ReferencePathWithRefAssemblies.Filename)' == 'mscorlib'" />
+                  <ReferencePathWithRefAssemblies Include="$(ManagedPath)\\mscorlib.dll">
+                    <Private>false</Private>
+                    <ReferenceAssembly>$(ManagedPath)\\mscorlib.dll</ReferenceAssembly>
+                  </ReferencePathWithRefAssemblies>
+                </ItemGroup>
+
+                <ItemGroup Condition="Exists('$(ManagedPath)\\System.Memory.dll')">
+                  <ReferencePath Remove="@(ReferencePath)"
+                                 Condition="'%(ReferencePath.Filename)' == 'System.Memory'" />
+                  <ReferencePath Include="$(ManagedPath)\\System.Memory.dll">
+                    <Private>false</Private>
+                  </ReferencePath>
+
+                  <ReferencePathWithRefAssemblies Remove="@(ReferencePathWithRefAssemblies)"
+                                                  Condition="'%(ReferencePathWithRefAssemblies.Filename)' == 'System.Memory'" />
+                  <ReferencePathWithRefAssemblies Include="$(ManagedPath)\\System.Memory.dll">
+                    <Private>false</Private>
+                    <ReferenceAssembly>$(ManagedPath)\\System.Memory.dll</ReferenceAssembly>
+                  </ReferencePathWithRefAssemblies>
+                </ItemGroup>
+
+                <Message Text="SkylineDock: using the Cities: Skylines II runtime references from $(ManagedPath)"
+                         Importance="high" />
+              </Target>
+            </Project>
+            """
+        ),
+        encoding="utf-8",
+    )
+    return overlay
 
 
 def _inspect_zip(report: ScanReport) -> SourceBuildInspection:
@@ -385,8 +550,31 @@ def _execute(
     result = runner(command, cwd, env)
     logs.append(f"> {' '.join(command)}\n{result.output}".rstrip())
     if result.return_code != 0:
-        tail = result.output[-4_000:]
-        raise SourceBuildError(f"Build command failed ({result.return_code}):\n{tail}")
+        raise SourceBuildError(
+            _summarize_command_failure(result),
+            diagnostic_log="\n\n".join(logs),
+        )
+
+
+def _summarize_command_failure(result: CommandResult) -> str:
+    if result.return_code in {-2147450730, 0x80008096}:
+        return (
+            "A CS2 build tool could not start because its required .NET Runtime is missing. "
+            "Close SkylineDock, install the runtime named by the toolchain setup screen, "
+            "then try again."
+        )
+
+    lines = [line.strip() for line in result.output.splitlines() if line.strip()]
+    interesting = [
+        line
+        for line in lines
+        if re.search(r"\b(error|failed|exception|exited with code)\b", line, re.IGNORECASE)
+    ]
+    selected = interesting[-20:] if interesting else lines[-20:]
+    excerpt = "\n".join(line[:1_200] for line in selected)
+    if not excerpt:
+        excerpt = "The command returned no diagnostic output."
+    return f"Build command failed ({result.return_code}):\n{excerpt}"
 
 
 def _run_command(command: list[str], cwd: Path, env: dict[str, str]) -> CommandResult:

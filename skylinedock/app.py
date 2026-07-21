@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import threading
 import tempfile
 import webbrowser
@@ -20,7 +21,7 @@ except ImportError:  # The app remains usable through the Browse button.
 from .installer import InstallError, build_install_plan, install
 from .models import PackageKind, ScanReport
 from .scanner import ArchiveScanner
-from .settings import AppSettings, load_settings, save_settings
+from .settings import AppSettings, default_settings_path, load_settings, save_settings
 from .source_builder import (
     SourceBuildError,
     build_trusted_source,
@@ -46,6 +47,7 @@ COLORS = {
 UNITY_LICENSE_URL = "https://docs.unity.com/en-us/hub/manage-license"
 NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
 DOTNET_DOWNLOAD_URL = "https://dotnet.microsoft.com/en-us/download/dotnet"
+DOTNET_RUNTIME_DOWNLOAD_URL = "https://dotnet.microsoft.com/en-us/download/dotnet/{family}"
 
 
 class SkylineDockApp:
@@ -475,7 +477,13 @@ class SkylineDockApp:
                     plan = build_install_plan(result.compiled_report)
                     destination = install(plan)
                 self.root.after(0, lambda: self._source_build_succeeded(destination))
-            except (SourceBuildError, InstallError, OSError) as exc:
+            except SourceBuildError as exc:
+                message = str(exc)
+                log_path = self._save_source_build_log(exc.diagnostic_log)
+                if log_path is not None:
+                    message += f"\n\nFull diagnostic log:\n{log_path}"
+                self.root.after(0, lambda message=message: self._source_build_failed(message))
+            except (InstallError, OSError) as exc:
                 message = str(exc)
                 self.root.after(0, lambda message=message: self._source_build_failed(message))
 
@@ -516,11 +524,13 @@ class SkylineDockApp:
         missing_toolchain = prerequisites.tool_path is None
         missing_npm = bool(inspection.ui_directories) and prerequisites.npm_executable is None
         missing_dotnet = prerequisites.dotnet_executable is None
+        missing_runtimes = prerequisites.missing_dotnet_runtimes
+        requirement_number = 1
 
         if missing_toolchain:
             self._add_requirement(
                 content,
-                "1. Install the Cities: Skylines II Modding Toolchain",
+                f"{requirement_number}. Install the Cities: Skylines II Modding Toolchain",
                 "Open the game, go to Options → Modding, then install or repair all "
                 "required tools. If installation waits for a Unity license, open Unity Hub, "
                 "sign in, then choose Licenses → Add license → Get a free personal license. "
@@ -528,28 +538,42 @@ class SkylineDockApp:
                 "Unity license guide",
                 UNITY_LICENSE_URL,
             )
+            requirement_number += 1
 
         if missing_npm:
-            number = 2 if missing_toolchain else 1
             self._add_requirement(
                 content,
-                f"{number}. Install Node.js LTS",
+                f"{requirement_number}. Install Node.js LTS",
                 "Download the Windows installer and keep the default options. npm is included "
                 "with Node.js; it does not need to be installed separately.",
                 "Download Node.js",
                 NODE_DOWNLOAD_URL,
             )
+            requirement_number += 1
 
         if missing_dotnet:
-            number = 1 + int(missing_toolchain) + int(missing_npm)
             version = inspection.dotnet_sdk_version or "a compatible current version"
             self._add_requirement(
                 content,
-                f"{number}. Install the .NET SDK",
+                f"{requirement_number}. Install the .NET SDK",
                 f"Install .NET SDK {version} or a compatible newer SDK for Windows.",
                 "Download .NET SDK",
                 DOTNET_DOWNLOAD_URL,
             )
+            requirement_number += 1
+
+        for runtime in missing_runtimes:
+            self._add_requirement(
+                content,
+                f"{requirement_number}. Install .NET Runtime {runtime.family} (x64)",
+                "The CS2 ModPostProcessor targets "
+                f"{runtime.framework} {runtime.version}. A newer major runtime does not "
+                "replace this requirement automatically. Install the latest patch in the "
+                f"{runtime.family} family; other installed .NET versions can remain.",
+                f"Download .NET {runtime.family} Runtime",
+                DOTNET_RUNTIME_DOWNLOAD_URL.format(family=runtime.family),
+            )
+            requirement_number += 1
 
         other_issues = []
         if not prerequisites.windows_supported:
@@ -654,6 +678,21 @@ class SkylineDockApp:
         if self.report and self.report.metadata.paradox_url:
             self.open_button.configure(state="normal")
         messagebox.showerror("Source build failed", message)
+
+    @staticmethod
+    def _save_source_build_log(log_text: str | None) -> Path | None:
+        if not log_text:
+            return None
+
+        try:
+            log_directory = default_settings_path().parent / "logs"
+            log_directory.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S-%fZ")
+            log_path = log_directory / f"source-build-{timestamp}.log"
+            log_path.write_text(log_text, encoding="utf-8")
+        except OSError:
+            return None
+        return log_path
 
     def _set_details(self, value: str) -> None:
         self.details.configure(state="normal")

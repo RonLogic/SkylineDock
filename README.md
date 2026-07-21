@@ -29,7 +29,8 @@ the official mod page when possible.
   Steam auto-detection is unavailable. The selected folder must contain
   `Cities2.exe`; mod files still go to the game's AppData folders.
 - Offers an advanced **Build trusted source** flow when the official CS2
-  modding toolchain, the required .NET SDK, and npm are available.
+  modding toolchain, its required .NET Runtime, the required .NET SDK, and npm
+  are available.
 - Blocks path traversal, archive symlinks, encrypted entries, oversized
   packages, and suspicious compression ratios.
 - Installs compiled mods transactionally into:
@@ -48,17 +49,29 @@ the user deliberately chooses **Build trusted source**, SkylineDock:
 1. Detects the solution, .NET SDK version, UI projects, build scripts, and CS2
    environment requirements.
 2. Verifies the selected game installation, auto-detects its official modding
-   toolchain, and checks `dotnet` and `npm`.
+   toolchain, checks `dotnet` and `npm`, and reads the toolchain's own
+   `runtimeconfig.json` to detect the exact .NET Runtime family it needs.
 3. If a component is missing, shows a customer-friendly one-time setup guide
    with official download links, including Unity license activation when the
    game toolchain pauses for it; no environment-variable setup is required.
 4. Extracts a validated copy into a temporary build directory.
-5. Redirects normal toolchain output through `CSII_USERDATAPATH` so an
-   unvalidated build does not go directly into the live game folder.
-6. Runs a reproducible `npm ci` when a locked UI project is present, followed
+5. Redirects both user-data and local-mod output with immutable MSBuild
+   properties so an unvalidated build does not go directly into the live game
+   folder.
+6. Adds an out-of-tree MSBuild hook that resolves Unity's `mscorlib.dll` and
+   `System.Memory.dll` from the selected CS2 installation. The mod's source
+   archive is not modified.
+7. Runs a reproducible `npm ci` when a locked UI project is present, followed
    by a Release build of the solution.
-7. Scans the output again and installs it transactionally only if it looks like
-   a compiled CS2 mod.
+8. Scans the output again and installs it transactionally only if it looks like
+   a compiled CS2 mod. If a command fails, a complete diagnostic log is saved
+   under `%LOCALAPPDATA%\SkylineDock\logs`.
+
+Some official CS2 toolchain releases still target .NET Runtime 6.0 even when a
+newer .NET SDK is installed. .NET major versions are side-by-side, so a newer
+runtime does not automatically satisfy that requirement. SkylineDock reads the
+installed toolchain and links the customer directly to the matching x64 Runtime
+when it is missing.
 
 This mode executes MSBuild and npm-controlled code with the current Windows
 user's permissions. The temporary directory prevents common accidental writes;
