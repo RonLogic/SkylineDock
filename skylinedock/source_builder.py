@@ -98,9 +98,8 @@ def check_source_build_prerequisites(
                 "Cities: Skylines II was not detected in Steam; choose the game folder manually."
             )
 
-    tool_value = os.environ.get("CSII_TOOLPATH")
-    tool_path = Path(tool_value).expanduser() if tool_value else None
-    if tool_path is None or not (tool_path / "Mod.props").is_file() or not (tool_path / "Mod.targets").is_file():
+    tool_path = _find_modding_toolchain(selected_game_path)
+    if tool_path is None:
         issues.append(
             "The official CS2 modding toolchain is missing or CSII_TOOLPATH is not configured."
         )
@@ -122,6 +121,28 @@ def check_source_build_prerequisites(
         npm_executable=npm,
         issues=issues,
     )
+
+
+def _find_modding_toolchain(game_path: Path | None) -> Path | None:
+    """Find the official toolchain without requiring customers to configure Windows."""
+
+    candidates: list[Path] = []
+    configured = os.environ.get("CSII_TOOLPATH", "").strip().strip('"')
+    if configured:
+        candidates.append(Path(configured).expanduser())
+
+    if game_path is not None:
+        candidates.extend(
+            [
+                game_path / "Cities2_Data" / "Content" / "Game" / ".ModdingToolchain",
+                game_path / ".ModdingToolchain",
+            ]
+        )
+
+    for candidate in candidates:
+        if (candidate / "Mod.props").is_file() and (candidate / "Mod.targets").is_file():
+            return candidate.resolve()
+    return None
 
 
 def build_trusted_source(

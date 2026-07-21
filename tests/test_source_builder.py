@@ -97,6 +97,23 @@ class SourceBuilderTests(unittest.TestCase):
         self.assertEqual(game.resolve(), prerequisites.steam_game_path)
         self.assertFalse(any("selected game folder" in issue for issue in prerequisites.issues))
 
+    def test_finds_toolchain_inside_selected_game_folder(self) -> None:
+        game = self.root / "Cities Skylines II"
+        game.mkdir()
+        (game / "Cities2.exe").write_bytes(b"MZ")
+        tools = game / "Cities2_Data" / "Content" / "Game" / ".ModdingToolchain"
+        tools.mkdir(parents=True)
+        (tools / "Mod.props").write_text("")
+        (tools / "Mod.targets").write_text("")
+
+        prerequisites = check_source_build_prerequisites(
+            inspect_source_build(self.report),
+            game_path=game,
+        )
+
+        self.assertEqual(tools.resolve(), prerequisites.tool_path)
+        self.assertFalse(any("CSII_TOOLPATH" in issue for issue in prerequisites.issues))
+
     def test_build_redirects_output_and_validates_compiled_mod(self) -> None:
         commands: list[list[str]] = []
 

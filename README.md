@@ -47,13 +47,17 @@ the user deliberately chooses **Build trusted source**, SkylineDock:
 
 1. Detects the solution, .NET SDK version, UI projects, build scripts, and CS2
    environment requirements.
-2. Verifies the Steam game installation, `CSII_TOOLPATH`, `dotnet`, and `npm`.
-3. Extracts a validated copy into a temporary build directory.
-4. Redirects normal toolchain output through `CSII_USERDATAPATH` so an
+2. Verifies the selected game installation, auto-detects its official modding
+   toolchain, and checks `dotnet` and `npm`.
+3. If a component is missing, shows a customer-friendly one-time setup guide
+   with official download links, including Unity license activation when the
+   game toolchain pauses for it; no environment-variable setup is required.
+4. Extracts a validated copy into a temporary build directory.
+5. Redirects normal toolchain output through `CSII_USERDATAPATH` so an
    unvalidated build does not go directly into the live game folder.
-5. Runs a reproducible `npm ci` when a locked UI project is present, followed
+6. Runs a reproducible `npm ci` when a locked UI project is present, followed
    by a Release build of the solution.
-6. Scans the output again and installs it transactionally only if it looks like
+7. Scans the output again and installs it transactionally only if it looks like
    a compiled CS2 mod.
 
 This mode executes MSBuild and npm-controlled code with the current Windows

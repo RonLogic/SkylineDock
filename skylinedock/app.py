@@ -43,6 +43,10 @@ COLORS = {
     "danger": "#FF6B7A",
 }
 
+UNITY_LICENSE_URL = "https://docs.unity.com/en-us/hub/manage-license"
+NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
+DOTNET_DOWNLOAD_URL = "https://dotnet.microsoft.com/en-us/download/dotnet"
+
 
 class SkylineDockApp:
     def __init__(self, initial_path: str | None = None) -> None:
@@ -437,11 +441,7 @@ class SkylineDockApp:
             return
 
         if not prerequisites.ready:
-            messagebox.showerror(
-                "Source build requirements",
-                "SkylineDock cannot build this source yet:\n\n"
-                + "\n".join(f"• {issue}" for issue in prerequisites.issues),
-            )
+            self._show_build_requirements(inspection, prerequisites)
             return
 
         warnings = "\n".join(f"• {warning}" for warning in inspection.warnings)
@@ -480,6 +480,161 @@ class SkylineDockApp:
                 self.root.after(0, lambda message=message: self._source_build_failed(message))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_build_requirements(self, inspection, prerequisites) -> None:
+        """Explain missing build tools without exposing environment-variable setup."""
+
+        dialog = tk.Toplevel(self.root)
+        dialog.withdraw()
+        dialog.title("One-time setup required")
+        dialog.configure(bg=COLORS["background"])
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
+        content = tk.Frame(dialog, bg=COLORS["background"], padx=28, pady=24)
+        content.pack(fill=BOTH, expand=True)
+        tk.Label(
+            content,
+            text="A one-time setup is needed to build this source mod",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 15),
+        ).pack(anchor="w")
+        tk.Label(
+            content,
+            text=(
+                "These free components are only needed when building source code. "
+                "Ready-to-install mods do not need them."
+            ),
+            bg=COLORS["background"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            justify=LEFT,
+            wraplength=610,
+        ).pack(anchor="w", pady=(5, 18))
+
+        missing_toolchain = prerequisites.tool_path is None
+        missing_npm = bool(inspection.ui_directories) and prerequisites.npm_executable is None
+        missing_dotnet = prerequisites.dotnet_executable is None
+
+        if missing_toolchain:
+            self._add_requirement(
+                content,
+                "1. Install the Cities: Skylines II Modding Toolchain",
+                "Open the game, go to Options → Modding, then install or repair all "
+                "required tools. If installation waits for a Unity license, open Unity Hub, "
+                "sign in, then choose Licenses → Add license → Get a free personal license. "
+                "Return to the game and wait for every item to show a green check.",
+                "Unity license guide",
+                UNITY_LICENSE_URL,
+            )
+
+        if missing_npm:
+            number = 2 if missing_toolchain else 1
+            self._add_requirement(
+                content,
+                f"{number}. Install Node.js LTS",
+                "Download the Windows installer and keep the default options. npm is included "
+                "with Node.js; it does not need to be installed separately.",
+                "Download Node.js",
+                NODE_DOWNLOAD_URL,
+            )
+
+        if missing_dotnet:
+            number = 1 + int(missing_toolchain) + int(missing_npm)
+            version = inspection.dotnet_sdk_version or "a compatible current version"
+            self._add_requirement(
+                content,
+                f"{number}. Install the .NET SDK",
+                f"Install .NET SDK {version} or a compatible newer SDK for Windows.",
+                "Download .NET SDK",
+                DOTNET_DOWNLOAD_URL,
+            )
+
+        other_issues = []
+        if not prerequisites.windows_supported:
+            other_issues.append("Source builds are currently supported on Windows only.")
+        if prerequisites.steam_game_path is None:
+            other_issues.append(
+                "Choose the folder containing Cities2.exe in SkylineDock before building."
+            )
+        if other_issues:
+            tk.Label(
+                content,
+                text="\n".join(f"• {issue}" for issue in other_issues),
+                bg=COLORS["background"],
+                fg=COLORS["warning"],
+                font=("Segoe UI", 9),
+                justify=LEFT,
+                wraplength=610,
+            ).pack(anchor="w", pady=(0, 14))
+
+        tk.Label(
+            content,
+            text=(
+                "When installation is complete, restart SkylineDock, load the package again, "
+                "and click Build trusted source. SkylineDock will detect the tools automatically."
+            ),
+            bg=COLORS["panel_alt"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 9),
+            justify=LEFT,
+            wraplength=590,
+            padx=14,
+            pady=12,
+        ).pack(fill=X, pady=(2, 18))
+        ttk.Button(
+            content,
+            text="Close",
+            style="Primary.TButton",
+            command=dialog.destroy,
+        ).pack(anchor="e")
+
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + max(
+            0, (self.root.winfo_width() - dialog.winfo_width()) // 2
+        )
+        y = self.root.winfo_rooty() + max(
+            0, (self.root.winfo_height() - dialog.winfo_height()) // 2
+        )
+        dialog.geometry(f"+{x}+{y}")
+        dialog.deiconify()
+        dialog.grab_set()
+
+    @staticmethod
+    def _add_requirement(
+        parent: tk.Widget,
+        title: str,
+        explanation: str,
+        button_text: str,
+        url: str,
+    ) -> None:
+        panel = tk.Frame(parent, bg=COLORS["panel_alt"], padx=14, pady=12)
+        panel.pack(fill=X, pady=(0, 10))
+        copy = tk.Frame(panel, bg=COLORS["panel_alt"])
+        copy.pack(side=LEFT, fill=X, expand=True)
+        tk.Label(
+            copy,
+            text=title,
+            bg=COLORS["panel_alt"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        tk.Label(
+            copy,
+            text=explanation,
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            justify=LEFT,
+            wraplength=430,
+        ).pack(anchor="w", pady=(3, 0))
+        ttk.Button(
+            panel,
+            text=button_text,
+            style="Secondary.TButton",
+            command=lambda: webbrowser.open(url),
+        ).pack(side=RIGHT, padx=(16, 0))
 
     def _source_build_succeeded(self, destination: Path) -> None:
         self.status_badge.configure(text="BUILT & INSTALLED", bg=COLORS["good"], fg="#07111A")
