@@ -33,7 +33,7 @@ class InstallerTests(unittest.TestCase):
 
         destination = install(plan)
 
-        self.assertEqual(app_data / "Mods" / "UsefulMod", destination)
+        self.assertEqual((app_data / "Mods" / "UsefulMod").resolve(), destination.resolve())
         self.assertEqual(b"version one", (destination / "UsefulMod.dll").read_bytes())
         receipt = app_data / ".skylinedock" / "receipts" / "UsefulMod.json"
         self.assertTrue(receipt.exists())
