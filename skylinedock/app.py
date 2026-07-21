@@ -1,0 +1,411 @@
+from __future__ import annotations
+
+import threading
+import tempfile
+import webbrowser
+from pathlib import Path
+from tkinter import BOTH, END, LEFT, RIGHT, X, filedialog, messagebox
+import tkinter as tk
+from tkinter import ttk
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    DND_AVAILABLE = True
+except ImportError:  # The app remains usable through the Browse button.
+    DND_FILES = None
+    TkinterDnD = None
+    DND_AVAILABLE = False
+
+from .installer import InstallError, build_install_plan, install
+from .models import PackageKind, ScanReport
+from .scanner import ArchiveScanner
+from .source_builder import (
+    SourceBuildError,
+    build_trusted_source,
+    check_source_build_prerequisites,
+    inspect_source_build,
+)
+
+
+COLORS = {
+    "background": "#0B1020",
+    "panel": "#121A2D",
+    "panel_alt": "#18233A",
+    "text": "#F5F7FC",
+    "muted": "#9EABC2",
+    "accent": "#6D8DFF",
+    "accent_active": "#5576EC",
+    "good": "#48D597",
+    "warning": "#FFB84A",
+    "danger": "#FF6B7A",
+}
+
+
+class SkylineDockApp:
+    def __init__(self, initial_path: str | None = None) -> None:
+        self.root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
+        self.root.title("SkylineDock")
+        self.root.geometry("940x660")
+        self.root.minsize(820, 590)
+        self.root.configure(bg=COLORS["background"])
+
+        self.scanner = ArchiveScanner()
+        self.report: ScanReport | None = None
+        self._build_styles()
+        self._build_ui()
+
+        if initial_path:
+            self.root.after(150, lambda: self.scan(Path(initial_path)))
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+    def _build_styles(self) -> None:
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure(
+            "Primary.TButton",
+            background=COLORS["accent"],
+            foreground="white",
+            borderwidth=0,
+            focusthickness=0,
+            padding=(20, 11),
+            font=("Segoe UI Semibold", 10),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", COLORS["accent_active"]), ("disabled", "#36415B")],
+            foreground=[("disabled", "#8A94A8")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background=COLORS["panel_alt"],
+            foreground=COLORS["text"],
+            borderwidth=0,
+            padding=(18, 11),
+            font=("Segoe UI Semibold", 10),
+        )
+        style.map("Secondary.TButton", background=[("active", "#22304C")])
+
+    def _build_ui(self) -> None:
+        header = tk.Frame(self.root, bg=COLORS["background"])
+        header.pack(fill=X, padx=36, pady=(28, 18))
+        tk.Label(
+            header,
+            text="SkylineDock",
+            bg=COLORS["background"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 24),
+        ).pack(side=LEFT)
+        tk.Label(
+            header,
+            text="Safe, one-step Cities: Skylines II mod setup",
+            bg=COLORS["background"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 10),
+        ).pack(side=LEFT, padx=(18, 0), pady=(9, 0))
+
+        self.drop_frame = tk.Frame(
+            self.root,
+            bg=COLORS["panel"],
+            highlightbackground="#2B3856",
+            highlightthickness=2,
+            cursor="hand2",
+        )
+        self.drop_frame.pack(fill=X, padx=36, pady=(0, 18), ipady=24)
+        self.drop_frame.bind("<Button-1>", lambda _event: self._browse())
+
+        self.drop_title = tk.Label(
+            self.drop_frame,
+            text="Drop a ZIP or mod folder here",
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 15),
+        )
+        self.drop_title.pack(pady=(12, 5))
+        self.drop_title.bind("<Button-1>", lambda _event: self._browse())
+        tk.Label(
+            self.drop_frame,
+            text="or click to browse  •  ZIP and folders supported in this MVP",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 10),
+        ).pack()
+
+        if DND_AVAILABLE:
+            self.drop_frame.drop_target_register(DND_FILES)
+            self.drop_frame.dnd_bind("<<Drop>>", self._on_drop)
+
+        result_panel = tk.Frame(self.root, bg=COLORS["panel"], padx=24, pady=20)
+        result_panel.pack(fill=BOTH, expand=True, padx=36, pady=(0, 22))
+
+        top_row = tk.Frame(result_panel, bg=COLORS["panel"])
+        top_row.pack(fill=X)
+        self.status_badge = tk.Label(
+            top_row,
+            text="WAITING FOR A PACKAGE",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            padx=12,
+            pady=6,
+            font=("Segoe UI Semibold", 9),
+        )
+        self.status_badge.pack(side=LEFT)
+        self.package_name = tk.Label(
+            top_row,
+            text="",
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 17),
+        )
+        self.package_name.pack(side=LEFT, padx=(16, 0))
+
+        self.details = tk.Text(
+            result_panel,
+            height=12,
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            insertbackground=COLORS["text"],
+            selectbackground=COLORS["accent"],
+            relief="flat",
+            borderwidth=0,
+            font=("Cascadia Mono", 10),
+            wrap="word",
+            padx=0,
+            pady=14,
+        )
+        self.details.pack(fill=BOTH, expand=True)
+        self.details.insert(END, "Drop a package to inspect it without changing your game files.")
+        self.details.configure(state="disabled")
+
+        actions = tk.Frame(result_panel, bg=COLORS["panel"])
+        actions.pack(fill=X, pady=(8, 0))
+        self.open_button = ttk.Button(
+            actions,
+            text="Open official mod",
+            style="Secondary.TButton",
+            command=self._open_official,
+            state="disabled",
+        )
+        self.open_button.pack(side=RIGHT, padx=(10, 0))
+        self.build_button = ttk.Button(
+            actions,
+            text="Build trusted source",
+            style="Secondary.TButton",
+            command=self._build_source,
+            state="disabled",
+        )
+        self.build_button.pack(side=RIGHT, padx=(10, 0))
+        self.install_button = ttk.Button(
+            actions,
+            text="Install safely",
+            style="Primary.TButton",
+            command=self._install,
+            state="disabled",
+        )
+        self.install_button.pack(side=RIGHT)
+
+        self.footer = tk.Label(
+            self.root,
+            text="Nothing is extracted or executed during scanning.",
+            bg=COLORS["background"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        )
+        self.footer.pack(pady=(0, 16))
+
+    def _browse(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Select a CS2 mod package",
+            filetypes=[("ZIP archives", "*.zip"), ("All files", "*.*")],
+        )
+        if selected:
+            self.scan(Path(selected))
+
+    def _on_drop(self, event: object) -> None:
+        paths = self.root.tk.splitlist(event.data)
+        if paths:
+            self.scan(Path(paths[0]))
+
+    def scan(self, path: Path) -> None:
+        self._set_loading(path)
+
+        def worker() -> None:
+            report = self.scanner.scan(path)
+            self.root.after(0, lambda: self._show_report(report))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_loading(self, path: Path) -> None:
+        self.report = None
+        self.status_badge.configure(text="SCANNING", bg="#243457", fg="#BFD0FF")
+        self.package_name.configure(text=path.name)
+        self._set_details("Inspecting structure and metadata…")
+        self.install_button.configure(state="disabled")
+        self.open_button.configure(state="disabled")
+        self.build_button.configure(state="disabled")
+
+    def _show_report(self, report: ScanReport) -> None:
+        self.report = report
+        badge, color = self._badge_for(report.kind)
+        self.status_badge.configure(text=badge, bg=color, fg="#07111A")
+        self.package_name.configure(text=report.display_name)
+
+        lines = [
+            f"Type:          {report.kind.value.replace('_', ' ')}",
+            f"Source:        {report.source_type.value}",
+            f"Files:         {report.file_count:,}",
+            f"Expanded size: {self._format_bytes(report.uncompressed_size)}",
+        ]
+        if report.metadata.version:
+            lines.append(f"Mod version:   {report.metadata.version}")
+        if report.metadata.game_version:
+            lines.append(f"Game version:  {report.metadata.game_version}")
+        if report.metadata.author:
+            lines.append(f"Author:        {report.metadata.author}")
+        if report.metadata.paradox_mod_id:
+            lines.append(f"Paradox ID:    {report.metadata.paradox_mod_id}")
+        lines.extend(["", report.recommended_action])
+
+        if report.warnings:
+            lines.extend(["", "Warnings:", *[f"  • {item}" for item in report.warnings]])
+        if report.errors:
+            lines.extend(["", "Blocked:", *[f"  • {item}" for item in report.errors]])
+
+        self._set_details("\n".join(lines))
+        self.install_button.configure(state="normal" if report.can_install else "disabled")
+        self.open_button.configure(
+            state="normal" if report.metadata.paradox_url else "disabled"
+        )
+        self.build_button.configure(
+            state="normal" if report.kind == PackageKind.SOURCE_REPOSITORY else "disabled"
+        )
+
+    def _install(self) -> None:
+        if not self.report:
+            return
+        try:
+            plan = build_install_plan(self.report)
+            approved = messagebox.askyesno(
+                "Confirm installation",
+                f"Install {self.report.display_name} to:\n\n{plan.destination}\n\n"
+                "An existing copy will be backed up first.",
+            )
+            if not approved:
+                return
+            destination = install(plan)
+            messagebox.showinfo("Installed", f"Installed successfully to:\n{destination}")
+            self.footer.configure(text=f"Installed: {destination}", fg=COLORS["good"])
+        except InstallError as exc:
+            messagebox.showerror("Installation blocked", str(exc))
+
+    def _open_official(self) -> None:
+        if self.report and self.report.metadata.paradox_url:
+            webbrowser.open(self.report.metadata.paradox_url)
+
+    def _build_source(self) -> None:
+        if not self.report or self.report.kind != PackageKind.SOURCE_REPOSITORY:
+            return
+
+        try:
+            inspection = inspect_source_build(self.report)
+            prerequisites = check_source_build_prerequisites(inspection)
+        except SourceBuildError as exc:
+            messagebox.showerror("Source build unavailable", str(exc))
+            return
+
+        if not prerequisites.ready:
+            messagebox.showerror(
+                "Source build requirements",
+                "SkylineDock cannot build this source yet:\n\n"
+                + "\n".join(f"• {issue}" for issue in prerequisites.issues),
+            )
+            return
+
+        warnings = "\n".join(f"• {warning}" for warning in inspection.warnings)
+        approved = messagebox.askyesno(
+            "Build trusted source?",
+            "Building source runs commands supplied by the mod author. Continue only if you "
+            "trust the source and have closed Cities: Skylines II.\n\n"
+            f"{warnings}\n\n"
+            "SkylineDock will build a temporary copy, validate the output, and back up an "
+            "existing installation before replacing it.",
+        )
+        if not approved:
+            return
+
+        report = self.report
+        self.status_badge.configure(text="BUILDING SOURCE", bg="#243457", fg="#BFD0FF")
+        self.install_button.configure(state="disabled")
+        self.build_button.configure(state="disabled")
+        self.open_button.configure(state="disabled")
+        self.footer.configure(text="Building in a temporary workspace…", fg=COLORS["muted"])
+
+        def worker() -> None:
+            try:
+                with tempfile.TemporaryDirectory(prefix="SkylineDock-build-") as temporary:
+                    result = build_trusted_source(
+                        report,
+                        temporary,
+                        trusted_source_confirmed=True,
+                        prerequisites=prerequisites,
+                    )
+                    plan = build_install_plan(result.compiled_report)
+                    destination = install(plan)
+                self.root.after(0, lambda: self._source_build_succeeded(destination))
+            except (SourceBuildError, InstallError, OSError) as exc:
+                message = str(exc)
+                self.root.after(0, lambda message=message: self._source_build_failed(message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _source_build_succeeded(self, destination: Path) -> None:
+        self.status_badge.configure(text="BUILT & INSTALLED", bg=COLORS["good"], fg="#07111A")
+        self.footer.configure(text=f"Installed: {destination}", fg=COLORS["good"])
+        self.build_button.configure(state="normal")
+        if self.report and self.report.metadata.paradox_url:
+            self.open_button.configure(state="normal")
+        messagebox.showinfo(
+            "Source build complete",
+            f"The source was built, validated, and installed to:\n{destination}",
+        )
+
+    def _source_build_failed(self, message: str) -> None:
+        self.status_badge.configure(text="BUILD FAILED", bg=COLORS["danger"], fg="#07111A")
+        self.footer.configure(text="No unvalidated build was installed.", fg=COLORS["danger"])
+        self.build_button.configure(state="normal")
+        if self.report and self.report.metadata.paradox_url:
+            self.open_button.configure(state="normal")
+        messagebox.showerror("Source build failed", message)
+
+    def _set_details(self, value: str) -> None:
+        self.details.configure(state="normal")
+        self.details.delete("1.0", END)
+        self.details.insert(END, value)
+        self.details.configure(state="disabled")
+
+    @staticmethod
+    def _badge_for(kind: PackageKind) -> tuple[str, str]:
+        if kind in {PackageKind.READY_CODE_MOD, PackageKind.ASSET_PACKAGE}:
+            return "READY TO INSTALL", COLORS["good"]
+        if kind == PackageKind.SOURCE_REPOSITORY:
+            return "SOURCE CODE DETECTED", COLORS["warning"]
+        if kind == PackageKind.MIXED_SOURCE_PACKAGE:
+            return "REVIEW REQUIRED", COLORS["warning"]
+        if kind == PackageKind.INVALID:
+            return "BLOCKED", COLORS["danger"]
+        return "NOT RECOGNIZED", COLORS["warning"]
+
+    @staticmethod
+    def _format_bytes(size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if value < 1024 or unit == "GiB":
+                return f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} GiB"
+
+
+def run(initial_path: str | None = None) -> None:
+    SkylineDockApp(initial_path).run()

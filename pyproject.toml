@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skylinedock"
+version = "0.2.0.dev1"
+description = "Safe drag-and-drop mod installer for Cities: Skylines II"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "SkylineDock contributors" }]
+dependencies = ["tkinterdnd2==0.6.2"]
+keywords = ["cities-skylines-2", "mod-manager", "windows", "modding"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Topic :: Games/Entertainment",
+]
+
+[project.scripts]
+skylinedock = "skylinedock.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["skylinedock*"]
