@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 CS2_STEAM_APP_ID = "949230"
+CS2_EXECUTABLE = "Cities2.exe"
 
 
 @dataclass(slots=True, frozen=True)
@@ -31,6 +32,17 @@ def detect_cs2_steam_installation(steam_root: str | Path | None = None) -> Steam
         game_path = library / "steamapps" / "common" / install_dir
         if game_path.is_dir():
             return SteamGameInstallation(root, library, game_path.resolve(), manifest.resolve())
+    return None
+
+
+def validate_cs2_game_path(game_path: str | Path) -> Path | None:
+    """Validate a manually selected Cities: Skylines II installation folder."""
+
+    selected = Path(game_path).expanduser()
+    candidates = [selected, selected / "Cities Skylines II"]
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / CS2_EXECUTABLE).is_file():
+            return candidate.resolve()
     return None
 
 

@@ -13,7 +13,7 @@ from typing import Protocol
 
 from .models import PackageKind, ScanReport, SourceType
 from .scanner import ArchiveScanner
-from .steam import detect_cs2_steam_installation
+from .steam import detect_cs2_steam_installation, validate_cs2_game_path
 
 
 class SourceBuildError(RuntimeError):
@@ -78,15 +78,25 @@ def inspect_source_build(report: ScanReport) -> SourceBuildInspection:
 def check_source_build_prerequisites(
     inspection: SourceBuildInspection,
     steam_root: str | Path | None = None,
+    game_path: str | Path | None = None,
 ) -> SourceBuildPrerequisites:
     issues: list[str] = []
     windows_supported = os.name == "nt"
     if not windows_supported:
         issues.append("Source builds currently require Windows.")
 
-    steam = detect_cs2_steam_installation(steam_root)
-    if steam is None:
-        issues.append("Cities: Skylines II was not detected in a Steam library.")
+    selected_game_path: Path | None
+    if game_path is not None:
+        selected_game_path = validate_cs2_game_path(game_path)
+        if selected_game_path is None:
+            issues.append("The selected game folder is invalid or does not contain Cities2.exe.")
+    else:
+        steam = detect_cs2_steam_installation(steam_root)
+        selected_game_path = steam.game_path if steam else None
+        if selected_game_path is None:
+            issues.append(
+                "Cities: Skylines II was not detected in Steam; choose the game folder manually."
+            )
 
     tool_value = os.environ.get("CSII_TOOLPATH")
     tool_path = Path(tool_value).expanduser() if tool_value else None
@@ -106,7 +116,7 @@ def check_source_build_prerequisites(
 
     return SourceBuildPrerequisites(
         windows_supported=windows_supported,
-        steam_game_path=steam.game_path if steam else None,
+        steam_game_path=selected_game_path,
         tool_path=tool_path,
         dotnet_executable=dotnet,
         npm_executable=npm,

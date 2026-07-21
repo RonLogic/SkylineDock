@@ -5,4 +5,4 @@ from .scanner import ArchiveScanner
 
 __all__ = ["ArchiveScanner", "PackageKind", "ScanReport", "SourceType"]
 
-__version__ = "0.2.0.dev1"
+__version__ = "0.2.0.dev2"

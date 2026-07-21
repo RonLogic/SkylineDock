@@ -12,6 +12,7 @@ from skylinedock.source_builder import (
     SourceBuildError,
     SourceBuildPrerequisites,
     build_trusted_source,
+    check_source_build_prerequisites,
     inspect_source_build,
 )
 
@@ -82,6 +83,19 @@ class SourceBuilderTests(unittest.TestCase):
                 trusted_source_confirmed=False,
                 prerequisites=self.prerequisites(),
             )
+
+    def test_accepts_a_manually_selected_game_folder(self) -> None:
+        game = self.root / "Cities Skylines II"
+        game.mkdir()
+        (game / "Cities2.exe").write_bytes(b"MZ")
+
+        prerequisites = check_source_build_prerequisites(
+            inspect_source_build(self.report),
+            game_path=game,
+        )
+
+        self.assertEqual(game.resolve(), prerequisites.steam_game_path)
+        self.assertFalse(any("selected game folder" in issue for issue in prerequisites.issues))
 
     def test_build_redirects_output_and_validates_compiled_mod(self) -> None:
         commands: list[list[str]] = []

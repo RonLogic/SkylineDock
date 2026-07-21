@@ -20,12 +20,14 @@ except ImportError:  # The app remains usable through the Browse button.
 from .installer import InstallError, build_install_plan, install
 from .models import PackageKind, ScanReport
 from .scanner import ArchiveScanner
+from .settings import AppSettings, load_settings, save_settings
 from .source_builder import (
     SourceBuildError,
     build_trusted_source,
     check_source_build_prerequisites,
     inspect_source_build,
 )
+from .steam import detect_cs2_steam_installation, validate_cs2_game_path
 
 
 COLORS = {
@@ -46,14 +48,18 @@ class SkylineDockApp:
     def __init__(self, initial_path: str | None = None) -> None:
         self.root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
         self.root.title("SkylineDock")
-        self.root.geometry("940x660")
-        self.root.minsize(820, 590)
+        self.root.geometry("980x740")
+        self.root.minsize(860, 660)
         self.root.configure(bg=COLORS["background"])
 
         self.scanner = ArchiveScanner()
         self.report: ScanReport | None = None
+        self.settings: AppSettings = load_settings()
+        self.game_path: Path | None = None
+        self.game_path_source: str | None = None
         self._build_styles()
         self._build_ui()
+        self._load_game_location()
 
         if initial_path:
             self.root.after(150, lambda: self.scan(Path(initial_path)))
@@ -105,6 +111,48 @@ class SkylineDockApp:
             fg=COLORS["muted"],
             font=("Segoe UI", 10),
         ).pack(side=LEFT, padx=(18, 0), pady=(9, 0))
+
+        game_row = tk.Frame(self.root, bg=COLORS["panel_alt"], padx=16, pady=12)
+        game_row.pack(fill=X, padx=36, pady=(0, 16))
+        game_copy = tk.Frame(game_row, bg=COLORS["panel_alt"])
+        game_copy.pack(side=LEFT, fill=X, expand=True)
+        tk.Label(
+            game_copy,
+            text="GAME INSTALLATION",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI Semibold", 8),
+        ).pack(anchor="w")
+        self.game_path_label = tk.Label(
+            game_copy,
+            text="Detecting Cities: Skylines II…",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            width=64,
+        )
+        self.game_path_label.pack(fill=X, pady=(2, 0))
+        tk.Label(
+            game_copy,
+            text="Locates the game and build tools; mods still install into the CS2 AppData folder.",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill=X, pady=(2, 0))
+        ttk.Button(
+            game_row,
+            text="Auto-detect",
+            style="Secondary.TButton",
+            command=self._auto_detect_game_folder,
+        ).pack(side=RIGHT, padx=(8, 0))
+        ttk.Button(
+            game_row,
+            text="Choose game folder",
+            style="Secondary.TButton",
+            command=self._choose_game_folder,
+        ).pack(side=RIGHT, padx=(12, 0))
 
         self.drop_frame = tk.Frame(
             self.root,
@@ -223,6 +271,76 @@ class SkylineDockApp:
         if selected:
             self.scan(Path(selected))
 
+    def _load_game_location(self) -> None:
+        if self.settings.game_path:
+            validated = validate_cs2_game_path(self.settings.game_path)
+            if validated:
+                self._set_game_location(validated, "manual")
+                return
+
+        detected = detect_cs2_steam_installation()
+        if detected:
+            self._set_game_location(detected.game_path, "Steam auto-detected")
+        else:
+            self._set_game_location(None, None)
+
+    def _choose_game_folder(self) -> None:
+        initial = str(self.game_path) if self.game_path else None
+        selected = filedialog.askdirectory(
+            title="Select the Cities: Skylines II installation folder",
+            initialdir=initial,
+            mustexist=True,
+        )
+        if not selected:
+            return
+
+        validated = validate_cs2_game_path(selected)
+        if validated is None:
+            messagebox.showerror(
+                "Invalid game folder",
+                "Choose the folder that contains Cities2.exe.\n\n"
+                "Example:\nC:\\Program Files (x86)\\Steam\\steamapps\\common\\Cities Skylines II",
+            )
+            return
+
+        self.settings.game_path = str(validated)
+        self._save_settings()
+        self._set_game_location(validated, "manual")
+
+    def _auto_detect_game_folder(self) -> None:
+        detected = detect_cs2_steam_installation()
+        if detected is None:
+            messagebox.showerror(
+                "Game not detected",
+                "Cities: Skylines II was not found in the configured Steam libraries. "
+                "Use Choose game folder instead.",
+            )
+            return
+
+        self.settings.game_path = None
+        self._save_settings()
+        self._set_game_location(detected.game_path, "Steam auto-detected")
+
+    def _save_settings(self) -> None:
+        try:
+            save_settings(self.settings)
+        except OSError as exc:
+            messagebox.showwarning(
+                "Settings were not saved",
+                f"The folder will work for this session, but could not be saved:\n{exc}",
+            )
+
+    def _set_game_location(self, path: Path | None, source: str | None) -> None:
+        self.game_path = path
+        self.game_path_source = source
+        if path is None:
+            self.game_path_label.configure(
+                text="Game not detected — choose the installation folder manually.",
+                fg=COLORS["warning"],
+            )
+            return
+        self.game_path_label.configure(text=f"{path}  •  {source}", fg=COLORS["text"])
+
     def _on_drop(self, event: object) -> None:
         paths = self.root.tk.splitlist(event.data)
         if paths:
@@ -310,7 +428,10 @@ class SkylineDockApp:
 
         try:
             inspection = inspect_source_build(self.report)
-            prerequisites = check_source_build_prerequisites(inspection)
+            prerequisites = check_source_build_prerequisites(
+                inspection,
+                game_path=self.game_path,
+            )
         except SourceBuildError as exc:
             messagebox.showerror("Source build unavailable", str(exc))
             return

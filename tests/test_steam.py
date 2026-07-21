@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from skylinedock.steam import detect_cs2_steam_installation
+from skylinedock.steam import detect_cs2_steam_installation, validate_cs2_game_path
 
 
 class SteamDetectionTests(unittest.TestCase):
@@ -42,6 +42,20 @@ class SteamDetectionTests(unittest.TestCase):
         (steam / "steamapps").mkdir(parents=True)
 
         self.assertIsNone(detect_cs2_steam_installation(steam))
+
+    def test_validates_manually_selected_game_folder(self) -> None:
+        game = self.root / "Cities Skylines II"
+        game.mkdir()
+        (game / "Cities2.exe").write_bytes(b"MZ")
+
+        self.assertEqual(game.resolve(), validate_cs2_game_path(game))
+        self.assertEqual(game.resolve(), validate_cs2_game_path(self.root))
+
+    def test_rejects_manual_folder_without_game_executable(self) -> None:
+        folder = self.root / "Not the game"
+        folder.mkdir()
+
+        self.assertIsNone(validate_cs2_game_path(folder))
 
 
 if __name__ == "__main__":

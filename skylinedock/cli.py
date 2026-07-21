@@ -37,12 +37,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     source_check_parser.add_argument("path", type=Path)
     source_check_parser.add_argument("--steam-root", type=Path)
+    source_check_parser.add_argument("--game-path", type=Path)
 
     source_build_parser = subparsers.add_parser(
         "build-source", help="Build trusted source, validate it, and install the result"
     )
     source_build_parser.add_argument("path", type=Path)
     source_build_parser.add_argument("--app-data", type=Path)
+    source_build_parser.add_argument("--game-path", type=Path)
     source_build_parser.add_argument(
         "--trust-source-code",
         action="store_true",
@@ -56,7 +58,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             inspection = inspect_source_build(report)
             prerequisites = check_source_build_prerequisites(
-                inspection, getattr(args, "steam_root", None)
+                inspection,
+                getattr(args, "steam_root", None),
+                getattr(args, "game_path", None),
             )
             if args.command == "source-check":
                 print(f"Mod: {inspection.mod_name}")

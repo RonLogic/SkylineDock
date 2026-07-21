@@ -25,6 +25,9 @@ the official mod page when possible.
   mod page instead of copying source code into the game.
 - Detects Steam and the Cities: Skylines II installation across Steam library
   folders.
+- Lets the user choose and remember the game installation folder manually when
+  Steam auto-detection is unavailable. The selected folder must contain
+  `Cities2.exe`; mod files still go to the game's AppData folders.
 - Offers an advanced **Build trusted source** flow when the official CS2
   modding toolchain, the required .NET SDK, and npm are available.
 - Blocks path traversal, archive symlinks, encrypted entries, oversized
@@ -91,6 +94,13 @@ Source requirements can be checked without executing project code:
 
 ```powershell
 python -m skylinedock source-check "C:\Downloads\Traffic-main.zip"
+```
+
+If Steam auto-detection is unavailable, provide the game folder explicitly:
+
+```powershell
+python -m skylinedock source-check "C:\Downloads\Traffic-main.zip" `
+  --game-path "D:\SteamLibrary\steamapps\common\Cities Skylines II"
 ```
 
 Building source requires an intentionally explicit trust flag:
