@@ -179,6 +179,7 @@ class SourceBuilderTests(unittest.TestCase):
 
     def test_build_redirects_output_and_validates_compiled_mod(self) -> None:
         commands: list[list[str]] = []
+        work_root = (self.root / "work").resolve()
 
         def fake_runner(command: list[str], cwd: Path, env: dict[str, str]) -> CommandResult:
             commands.append(command)
@@ -191,7 +192,7 @@ class SourceBuilderTests(unittest.TestCase):
 
         result = build_trusted_source(
             self.report,
-            self.root / "work",
+            work_root,
             trusted_source_confirmed=True,
             prerequisites=self.prerequisites(),
             runner=fake_runner,
@@ -202,11 +203,11 @@ class SourceBuilderTests(unittest.TestCase):
         self.assertEqual("ci", commands[0][1])
         self.assertEqual("build", commands[1][1])
         self.assertIn(
-            f"--property:UserDataPath={self.root / 'work' / 'build-user-data'}",
+            f"--property:UserDataPath={work_root / 'build-user-data'}",
             commands[1],
         )
         self.assertIn(
-            f"--property:LocalModsPath={self.root / 'work' / 'build-user-data' / 'Mods'}",
+            f"--property:LocalModsPath={work_root / 'build-user-data' / 'Mods'}",
             commands[1],
         )
         overlay_argument = next(
@@ -220,7 +221,7 @@ class SourceBuilderTests(unittest.TestCase):
         self.assertIn("$(ManagedPath)\\mscorlib.dll", overlay)
         self.assertIn("$(ManagedPath)\\System.Memory.dll", overlay)
         self.assertEqual(
-            self.root / "work" / "build-user-data" / "Mods",
+            work_root / "build-user-data" / "Mods",
             result.output_directory.parent,
         )
 
